@@ -1,17 +1,36 @@
-# Python
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+
+# Virtual environments
 venv/
+.env/
 .env
+
+# Distribution / packaging
+build/
+dist/
+eggs/
+*.egg-info/
+.installed.cfg
+
+# Jupyter / IPython
+.ipynb_checkpoints/
 
 # Streamlit
 .streamlit/
 
-# Data files if sensitive
-data/*.csv
+# VSCode / IDE
+.vscode/
+.idea/
 
-# OS
+# OS files
 .DS_Store
 Thumbs.db
+
+# Logs
+*.log
+
+# Data (optional - keep out of git if not needed)
+data/*.csv
