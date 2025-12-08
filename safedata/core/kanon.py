@@ -8,14 +8,9 @@ from .risk import RiskAssessor
 
 
 def generalise_age(df: pd.DataFrame, col: str = "age", bin_width: int = 10) -> pd.DataFrame:
-    """
-    Generalise numeric age into bins of given width (e.g. 10-year ranges).
-    If age is already categorical (e.g. '30-39'), it is left unchanged.
-    """
     if col not in df.columns:
         return df
 
-    # If age is already generalised (string categories), don't touch it
     if not is_numeric_dtype(df[col]):
         return df
 
@@ -29,11 +24,6 @@ def generalise_age(df: pd.DataFrame, col: str = "age", bin_width: int = 10) -> p
 
 
 def generalise_native_country(df: pd.DataFrame, col: str = "native-country") -> pd.DataFrame:
-    """
-    Generalise native-country into coarse regions:
-    - 'United-States'
-    - 'Non-US'
-    """
     if col not in df.columns:
         return df
 
@@ -44,33 +34,51 @@ def generalise_native_country(df: pd.DataFrame, col: str = "native-country") -> 
     return df
 
 
+def _suppress_small_classes(df: pd.DataFrame, qids: List[str], k: int) -> pd.DataFrame:
+    if not qids:
+        return df
+
+    df_work = df.dropna(subset=qids).copy()
+
+    if df_work.empty:
+        return df_work
+
+    df_work["_class_size"] = (
+        df_work.groupby(qids, observed=True)[qids[0]].transform("size")
+    )
+
+    df_suppressed = df_work[df_work["_class_size"] >= k].drop(columns="_class_size")
+
+    return df_suppressed
+
+
 def enforce_k_anonymity(
     df: pd.DataFrame,
     qids: List[str],
     k: int,
     max_iters: int = 1,
+    suppress: bool = True,
 ) -> pd.DataFrame:
     """
-    Simple heuristic K-anonymity:
-    - generalise age into bins
-    - generalise native-country into US / Non-US
-    - re-evaluate equivalence class sizes
-    - stop when:
-        * all equivalence classes >= k, or
-        * max_iters reached
+    K-anonymity pipeline:
+    1) Generalisation (age + native-country)
+    2) Optional suppression of leftover small equivalence classes
     """
     df_k = df.copy()
 
+    # --------- GENERALISATION PHASE ---------
     for _ in range(max_iters):
         assessor = RiskAssessor(df_k, qids)
         sizes = assessor.equivalence_class_sizes()
 
-        # If all groups have size >= k, we're done
         if (sizes < k).sum() == 0:
             break
 
-        # Apply generalisation
         df_k = generalise_age(df_k, "age", bin_width=10)
         df_k = generalise_native_country(df_k, "native-country")
+
+    # --------- SUPPRESSION PHASE ---------
+    if suppress:
+        df_k = _suppress_small_classes(df_k, qids=qids, k=k)
 
     return df_k

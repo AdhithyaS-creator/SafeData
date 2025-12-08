@@ -20,7 +20,7 @@ class RiskAssessor:
         """
         Size of each equivalence class defined by QIDs.
         """
-        return self.df.dropna(subset=self.qids).groupby(self.qids, observed=False).size()
+        return self.df.groupby(self.qids, observed=True).size()
 
     def uniqueness_ratio(self) -> float:
         """
