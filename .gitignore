@@ -33,4 +33,4 @@ Thumbs.db
 *.log
 
 # Data (optional - keep out of git if not needed)
-data/*.csv
+#data/*.csv
