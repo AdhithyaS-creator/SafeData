@@ -4,7 +4,6 @@ import sys
 import pandas as pd
 import streamlit as st
 
-# Ensure project root is on sys.path so "safedata" imports work
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
@@ -12,6 +11,7 @@ if str(ROOT) not in sys.path:
 from safedata.core.profiler import DataProfiler
 from safedata.core.risk import RiskAssessor
 from safedata.core.kanon import enforce_k_anonymity
+from safedata.core.ldiversity import enforce_l_diversity
 from safedata.core.utility import (
     suppression_rate,
     categorical_tv_distance,
@@ -20,17 +20,8 @@ from safedata.core.utility import (
 from safedata.core.qid_selector import analyse_qid_candidates
 
 
-def console_print(title: str, data):
-    print("\n" + title)
-    if isinstance(data, dict):
-        for k, v in data.items():
-            print(f"  {k}: {v}")
-    else:
-        print(" ", data)
-
-
-def pct(x: float) -> str:
-    return f"{x * 100:.2f}%"
+def pct(x):
+    return f"{x*100:.2f}%"
 
 
 @st.cache_data
@@ -194,13 +185,14 @@ def run_analysis(df: pd.DataFrame, qids, k_value: int):
 
     st.markdown("#### 3. After K-anonymity + suppression (final dataset)")
     c1, c2, c3 = st.columns(3)
-    c1.metric("Records", risk_sup["records"])
-    c2.metric("Equiv. classes", risk_sup["num_equivalence_classes"])
-    c3.metric("Uniqueness", pct(risk_sup["uniqueness_ratio"]))
+    c1.metric("Records", risk["records"])
+    c2.metric("Equiv. classes", risk["num_equivalence_classes"])
+    c3.metric("Uniqueness", pct(risk["uniqueness_ratio"]))
+
     c4, c5, c6 = st.columns(3)
-    c4.metric("Avg class size", f"{risk_sup['avg_equiv_class_size']:.2f}")
-    c5.metric("Min class size", risk_sup["min_equiv_class_size"])
-    c6.metric("Max class size", risk_sup["max_equiv_class_size"])
+    c4.metric("Avg class size", f"{risk['avg_equiv_class_size']:.2f}")
+    c5.metric("Min class size", risk["min_equiv_class_size"])
+    c6.metric("Max class size", risk["max_equiv_class_size"])
 
     suppr_final_raw = suppression_rate(df, df_k_sup)
     suppr_final_gen = suppression_rate(df_k_gen, df_k_sup)
@@ -230,35 +222,41 @@ def run_analysis(df: pd.DataFrame, qids, k_value: int):
 
 
 def main():
+
     st.set_page_config(
-        page_title="SafeData – Privacy–Utility Dashboard",
+        page_title="SafeData — Risk & Utility Dashboard",
         layout="wide",
     )
 
     st.title("SafeData – Privacy–Utility Preserving Framework")
 
     df = load_data()
-    summary = show_profile(df)
 
-    tab1, tab2 = st.tabs(["Dataset & QID candidates", "Risk–Utility explorer"])
+    # ========= PROFILE VIEW =========
+    tab1, tab2 = st.tabs(["Dataset & QID Candidates", "Risk — Utility Explorer"])
 
     with tab1:
         show_qid_analysis(df, summary["suggested_qids"])
 
-    with tab2:
+        st.subheader("QID Candidate Analysis")
         qid_analysis = analyse_qid_candidates(df, summary["suggested_qids"])
-        strong_names = [info["column"] for info in qid_analysis["strong_candidates"]]
-        weak_names = [info["column"] for info in qid_analysis["weak_candidates"]]
 
-        default_policy_qids = [
-            q for q in ["age", "sex", "education", "native-country"] if q in df.columns
-        ]
+        st.json(qid_analysis)
+
+    # ========= ANALYSIS VIEW =========
+    with tab2:
 
         st.sidebar.header("Configuration")
 
+        # Default policy QIDs
+        default_policy_qids = [
+            q for q in ["age", "sex", "education", "native-country"]
+            if q in df.columns
+        ]
+
         mode = st.sidebar.radio(
-            "QID selection mode",
-            options=["Full suggested (Mode A)", "Policy QIDs (Mode B)", "Custom (Mode C)"],
+            "QID Selection Mode",
+            ["Full Suggested", "Policy QIDs", "Custom"],
             index=1,
         )
 
