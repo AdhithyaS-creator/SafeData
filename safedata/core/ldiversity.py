@@ -9,60 +9,70 @@ def enforce_l_diversity(
     suppress: bool = True,
 ):
     """
-    Enforces DISTINCT L-DIVERSITY on already K-anonymised data.
+    DISTINCT L-Diversity enforcement.
 
-    A group is valid only if:
-        number of DISTINCT values in sensitive attribute >= L
+    A QID group is valid only if it contains at least L DISTINCT values
+    for the chosen sensitive attribute.
 
-    If suppress=True  -> remove violating groups
-    If suppress=False -> keep them (just report violations)
+    If suppress=True → violating groups are removed.
     """
 
     if sensitive_attr not in df.columns:
         raise ValueError(f"Sensitive attribute '{sensitive_attr}' not found in dataset")
 
-    # Compute distinct value counts per equivalence class
+    # Count distinct sensitive values per QID-group
     diversity = (
-        df.groupby(qids)[sensitive_attr]
+        df.groupby(qids, observed=False)[sensitive_attr]
         .nunique(dropna=True)
-        .reset_index(name="distinct_count")
+        .reset_index(name="distinct_sensitive_values")
     )
 
-    # Mark violating groups
-    violating_groups = diversity[diversity["distinct_count"] < L]
+    total_groups = len(diversity)
 
-    num_groups = len(diversity)
-    num_violating = len(violating_groups)
+    # Identify violating groups
+    violating = diversity[diversity["distinct_sensitive_values"] < L]
 
-    violation_ratio = num_violating / max(num_groups, 1)
+    violating_groups = len(violating)
+
+    violation_ratio = (
+        violating_groups / total_groups if total_groups > 0 else 0.0
+    )
+
+    if not suppress:
+        # return report only
+        return df.copy(), {
+            "total_groups": total_groups,
+            "violating_groups": violating_groups,
+            "violation_ratio": violation_ratio,
+            "L_value": L,
+            "suppression_applied": False,
+            "records_before": len(df),
+            "records_after": len(df),
+            "records_removed": 0,
+            "suppression_rate": 0.0,
+        }
+
+    # ---- Suppress violating records ----
+    merge_cols = qids
+
+    valid_groups = diversity[diversity["distinct_sensitive_values"] >= L][merge_cols]
+
+    df_before = len(df)
+
+    df_after = df.merge(valid_groups, on=qids, how="inner")
+
+    removed = df_before - len(df_after)
 
     report = {
-        "total_groups": num_groups,
-        "violating_groups": num_violating,
+        "total_groups": total_groups,
+        "violating_groups": violating_groups,
         "violation_ratio": violation_ratio,
         "L_value": L,
-        "suppression_applied": suppress,
+        "suppression_applied": True,
+        "records_before": df_before,
+        "records_after": len(df_after),
+        "records_removed": removed,
+        "suppression_rate": removed / df_before if df_before > 0 else 0.0,
     }
 
-    # If we are only analysing — stop here
-    if not suppress:
-            return df.copy(), report
-
-    # -----------------------------
-    # SUPPRESS violating groups
-    # -----------------------------
-
-    if num_violating == 0:
-        return df.copy(), report
-
-    # Join flags back to dataframe
-    df_flagged = df.merge(diversity, on=qids, how="left")
-
-    df_valid = df_flagged[df_flagged["distinct_count"] >= L].drop(columns=["distinct_count"])
-
-    report["records_before"] = len(df)
-    report["records_after"] = len(df_valid)
-    report["records_removed"] = len(df) - len(df_valid)
-    report["suppression_rate"] = report["records_removed"] / len(df)
-
-    return df_valid, report
+    return df_after, report

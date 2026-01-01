@@ -1,102 +1,56 @@
 import pandas as pd
-import numpy as np
 
 
-SENSITIVE_KEYWORDS = [
-    "income", "salary", "disease", "health",
-    "bank", "account", "religion"
-]
-
-
-def is_sensitive_column(col: str) -> bool:
-    col_l = col.lower()
-    return any(k in col_l for k in SENSITIVE_KEYWORDS)
-
-
-def column_entropy(series: pd.Series) -> float:
+def qid_uniqueness_score(df: pd.DataFrame, column: str) -> float:
     """
-    Shannon entropy — measures value spread / unpredictability.
-    """
-    counts = series.value_counts(normalize=True, dropna=True)
-    return -(counts * np.log2(counts)).sum()
+    Compute uniqueness score for a single column.
 
-
-def qid_risk_score(df: pd.DataFrame, col: str) -> dict:
-    """
-    Compute privacy-risk score for a single attribute.
-    Higher = stronger QID candidate.
+    Score ~ fraction of values that appear only once.
+    Higher score → higher re-identification risk.
     """
 
-    s = df[col]
+    if column not in df.columns:
+        return 0.0
 
-    nunique = s.nunique(dropna=True)
-    missing_ratio = s.isna().mean()
+    col = df[column].dropna()
 
-    # Distinct density wrt dataset size
-    distinct_density = nunique / len(df)
+    if len(col) == 0:
+            return 0.0
 
-    # Entropy (scaled 0-1)
-    ent = column_entropy(s)
-    ent_norm = ent / np.log2(max(nunique, 2))
+    freq = col.value_counts(dropna=True)
+    unique_count = (freq == 1).sum()
 
-    # Cardinality factor (categorical vs numeric)
-    cardinality_factor = min(nunique / 50, 1.0)
-
-    # Sensitivity penalty
-    sensitive = is_sensitive_column(col)
-    sensitive_penalty = 0.6 if sensitive else 0.0
-
-    # Final score (tunable weights)
-    score = (
-        0.40 * distinct_density +
-        0.30 * ent_norm +
-        0.20 * cardinality_factor -
-        0.20 * missing_ratio -
-        sensitive_penalty
-    )
-
-    return {
-        "column": col,
-        "nunique": nunique,
-        "missing_ratio": round(missing_ratio, 4),
-        "distinct_density": round(distinct_density, 4),
-        "entropy": round(ent, 4),
-        "entropy_norm": round(ent_norm, 4),
-        "score": round(score, 4),
-        "is_sensitive": sensitive,
-    }
+    return unique_count / len(col)
 
 
-def rank_qid_risks(df: pd.DataFrame, candidates: list[str]) -> dict:
+def rank_qids_by_uniqueness(df: pd.DataFrame, qid_candidates) -> list:
     """
-    Returns ranked QID risk groups based on score thresholds.
+    Rank QID candidates from highest to lowest re-identification risk.
+
+    Returns list of:
+      { column, uniqueness_score, nunique, missing_ratio }
     """
 
-    results = [qid_risk_score(df, c) for c in candidates]
+    results = []
 
-    strong = []
-    moderate = []
-    weak = []
-    avoid = []
+    for col in qid_candidates:
 
-    for r in results:
-        if r["is_sensitive"]:
-            avoid.append(r)
-        elif r["score"] >= 0.55:
-            strong.append(r)
-        elif r["score"] >= 0.35:
-            moderate.append(r)
-        else:
-            weak.append(r)
+        if col not in df.columns:
+            continue
 
-    # Sort high → low score in each bucket
-    for group in (strong, moderate, weak, avoid):
-        group.sort(key=lambda x: x["score"], reverse=True)
+        nunique = df[col].nunique(dropna=True)
+        missing_ratio = df[col].isna().mean()
 
-    return {
-        "strong": strong,
-        "moderate": moderate,
-        "weak": weak,
-        "avoid": avoid,
-        "all_scored": results,
-    }
+        score = qid_uniqueness_score(df, col)
+
+        results.append({
+            "column": col,
+            "uniqueness_score": round(score, 4),
+            "nunique": int(nunique),
+            "missing_ratio": round(float(missing_ratio), 4),
+        })
+
+    # Highest risk first
+    results = sorted(results, key=lambda x: x["uniqueness_score"], reverse=True)
+
+    return results

@@ -1,9 +1,9 @@
 from pathlib import Path
 import sys
-
 import pandas as pd
 import streamlit as st
 
+# Ensure project root is on sys.path
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
@@ -11,45 +11,47 @@ if str(ROOT) not in sys.path:
 from safedata.core.profiler import DataProfiler
 from safedata.core.risk import RiskAssessor
 from safedata.core.kanon import enforce_k_anonymity
-from safedata.core.ldiversity import enforce_l_diversity
 from safedata.core.utility import (
     suppression_rate,
     categorical_tv_distance,
     numeric_mean_std_error,
 )
 from safedata.core.qid_selector import analyse_qid_candidates
+from safedata.core.ldiversity import enforce_l_diversity
 
 
-def pct(x):
-    return f"{x*100:.2f}%"
+def pct(x: float) -> str:
+    return f"{x * 100:.2f}%"
 
 
 @st.cache_data
 def load_data() -> pd.DataFrame:
     data_path = ROOT / "data" / "adult.csv"
-    df = pd.read_csv(data_path)
-    return df
+    return pd.read_csv(data_path)
 
 
+# ------------------------------------------
+# SECTION: DATASET PROFILE
+# ------------------------------------------
 def show_profile(df: pd.DataFrame) -> dict:
     profiler = DataProfiler(df)
     summary = profiler.summary_dict()
 
-    st.subheader("Dataset profile")
+    st.subheader("Dataset Profile")
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Rows", summary["rows"])
     c2.metric("Columns", summary["cols"])
     c3.metric("File", "adult.csv")
 
-    with st.expander("Missing values per column", expanded=False):
+    with st.expander("Missing values per column"):
         st.dataframe(
             pd.DataFrame.from_dict(
                 summary["missing"], orient="index", columns=["missing"]
             )
         )
 
-    with st.expander("Unique values per column", expanded=False):
+    with st.expander("Unique values per column"):
         st.dataframe(
             pd.DataFrame.from_dict(
                 summary["unique"], orient="index", columns=["nunique"]
@@ -62,12 +64,15 @@ def show_profile(df: pd.DataFrame) -> dict:
     return summary
 
 
+# ------------------------------------------
+# SECTION: QID CANDIDATE ANALYSIS
+# ------------------------------------------
 def show_qid_analysis(df: pd.DataFrame, suggested_qids):
-    st.subheader("QID candidate analysis")
+    st.subheader("QID Candidate Analysis")
 
-    st.markdown(
-        "Columns are grouped by their re-identification potential and data quality. "
-        "This is a data-driven view, not the final policy decision."
+    st.caption(
+        "Columns are grouped based on re-identification potential and data quality. "
+        "This is a data-driven recommendation — final QIDs are policy-driven."
     )
 
     qid_analysis = analyse_qid_candidates(df, suggested_qids)
@@ -76,239 +81,233 @@ def show_qid_analysis(df: pd.DataFrame, suggested_qids):
     weak = qid_analysis["weak_candidates"]
     avoid = qid_analysis["avoid_as_qid"]
 
-    st.markdown("Strong candidates (high re-identification potential, low missingness):")
+    st.markdown("Strong candidates (high uniqueness & low missingness):")
     if strong:
-        df_strong = pd.DataFrame(strong)
-        st.dataframe(df_strong[["column", "nunique", "missing_ratio"]])
+        st.dataframe(pd.DataFrame(strong))
     else:
-        st.info("No strong candidates for this dataset.")
+        st.info("No strong candidates detected.")
 
     st.markdown("Weak / optional candidates:")
     if weak:
-        df_weak = pd.DataFrame(weak)
-        st.dataframe(df_weak[["column", "nunique", "missing_ratio"]])
+        st.dataframe(pd.DataFrame(weak))
     else:
-        st.info("No weak candidates for this dataset.")
+        st.info("No weak candidates detected.")
 
-    st.markdown("Columns to avoid as QIDs (too sparse or too identifying):")
+    st.markdown("Columns to avoid as QIDs:")
     if avoid:
-        df_avoid = pd.DataFrame(avoid)
-        st.dataframe(df_avoid[["column", "nunique", "missing_ratio"]])
+        st.dataframe(pd.DataFrame(avoid))
     else:
-        st.info("No avoid-as-QID columns detected for this dataset.")
+        st.info("No avoid-as-QID columns detected.")
 
     return qid_analysis
 
 
-def run_analysis(df: pd.DataFrame, qids, k_value: int):
-    """
-    Run full pipeline for given QIDs, log results to console,
-    show them in the UI, and return the final anonymised dataframe (df_k_sup).
-    """
-    st.subheader("Re-identification risk and utility")
+# ------------------------------------------
+# CORE PIPELINE RUNNER
+# ------------------------------------------
+def run_pipeline(df, qids, k_value: int, enable_ldiv: bool):
+    st.subheader("Risk–Utility Analysis")
 
     if not qids:
         st.error("No QIDs selected.")
         return None
 
-    cfg = {"QIDs": qids, "k": k_value, "records_raw": len(df)}
-    console_print("=== ANALYSIS CONFIGURATION ===", cfg)
+    st.markdown(f"**Active QIDs:** `{qids}`")
+    st.markdown(f"**k-anonymity parameter:** `{k_value}`")
 
-    st.markdown(f"Active QIDs: `{qids}`")
-    st.markdown(f"k-anonymity parameter: `k = {k_value}`")
-
-    # ========== 1) RAW RISK ==========
-
-    assessor_raw = RiskAssessor(df, qids=qids)
+    # ---------- 1) RAW RISK ----------
+    assessor_raw = RiskAssessor(df, qids)
     risk_raw = assessor_raw.risk_report()
-    console_print("--- RAW DATA RISK ---", risk_raw)
 
-    st.markdown("#### 1. Raw data (no anonymisation)")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Records", risk_raw["records"])
-    c2.metric("Equiv. classes", risk_raw["num_equivalence_classes"])
-    c3.metric("Uniqueness", pct(risk_raw["uniqueness_ratio"]))
-    c4, c5, c6 = st.columns(3)
-    c4.metric("Avg class size", f"{risk_raw['avg_equiv_class_size']:.2f}")
-    c5.metric("Min class size", risk_raw["min_equiv_class_size"])
-    c6.metric("Max class size", risk_raw["max_equiv_class_size"])
+    with st.container(border=True):
+        st.markdown("### Raw Data — Baseline Re-identification Risk")
 
-    st.caption(
-        "This is the baseline risk before any anonymisation."
-    )
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Records", risk_raw["records"])
+        c2.metric("Equivalence Classes", risk_raw["num_equivalence_classes"])
+        c3.metric("Uniqueness", pct(risk_raw["uniqueness_ratio"]))
 
-    # ========== 2) GENERALISATION ONLY ==========
+        c4, c5, c6 = st.columns(3)
+        c4.metric("Avg Class Size", f"{risk_raw['avg_equiv_class_size']:.2f}")
+        c5.metric("Min Class Size", risk_raw["min_equiv_class_size"])
+        c6.metric("Max Class Size", risk_raw["max_equiv_class_size"])
 
+        st.caption("Baseline risk prior to anonymisation.")
+
+    # ---------- 2) K-ANON (GENERALISATION ONLY) ----------
     df_k_gen = enforce_k_anonymity(df, qids=qids, k=k_value, suppress=False)
-    assessor_gen = RiskAssessor(df_k_gen, qids=qids)
+    assessor_gen = RiskAssessor(df_k_gen, qids)
     risk_gen = assessor_gen.risk_report()
-    console_print("--- AFTER K-ANONYMITY (GENERALISATION ONLY) ---", risk_gen)
 
-    st.markdown("#### 2. After K-anonymity (generalisation only)")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Records", risk_gen["records"])
-    c2.metric("Equiv. classes", risk_gen["num_equivalence_classes"])
-    c3.metric("Uniqueness", pct(risk_gen["uniqueness_ratio"]))
-    c4, c5, c6 = st.columns(3)
-    c4.metric("Avg class size", f"{risk_gen['avg_equiv_class_size']:.2f}")
-    c5.metric("Min class size", risk_gen["min_equiv_class_size"])
-    c6.metric("Max class size", risk_gen["max_equiv_class_size"])
-
-    # Utility
     suppr_gen = suppression_rate(df, df_k_gen)
 
-    tv_gen_rows = []
-    for col in ["education", "native-country", "income"]:
-        tv = categorical_tv_distance(df, df_k_gen, col)
-        tv_gen_rows.append({"column": col, "tv_distance (%)": tv * 100})
+    tv_gen_rows = [
+        {
+            "column": col,
+            "tv_distance (%)": categorical_tv_distance(df, df_k_gen, col) * 100,
+        }
+        for col in ["education", "native-country", "income"]
+        if col in df.columns
+    ]
 
     num_err_gen = numeric_mean_std_error(df, df_k_gen, "hours-per-week")
 
-    # UI
-    st.markdown("Utility vs raw (generalised only):")
-    c1, _ = st.columns(2)
-    c1.metric("Suppression vs raw", pct(suppr_gen))
+    with st.container(border=True):
+        st.markdown(f"### K-Anonymity — Generalisation Only (k = {k_value})")
 
-    with st.expander("Categorical TV distance (generalised vs raw)"):
-        st.table(pd.DataFrame(tv_gen_rows))
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Records", risk_gen["records"])
+        c2.metric("Equivalence Classes", risk_gen["num_equivalence_classes"])
+        c3.metric("Uniqueness", pct(risk_gen["uniqueness_ratio"]))
 
-    c1, c2 = st.columns(2)
-    c1.metric("Mean error (hours)", pct(num_err_gen["mean_rel_error"]))
-    c2.metric("Std error (hours)", pct(num_err_gen["std_rel_error"]))
+        c4, c5, c6 = st.columns(3)
+        c4.metric("Avg Class Size", f"{risk_gen['avg_equiv_class_size']:.2f}")
+        c5.metric("Min Class Size", risk_gen["min_equiv_class_size"])
+        c6.metric("Max Class Size", risk_gen["max_equiv_class_size"])
 
-    # ========== 3) GENERALISATION + SUPPRESSION (FINAL) ==========
+        st.markdown("**Utility vs Raw (after generalisation)**")
+        st.metric("Suppression", pct(suppr_gen))
 
+        with st.expander("Categorical TV Distance (Generalised vs Raw)"):
+            st.table(pd.DataFrame(tv_gen_rows))
+
+        c1, c2 = st.columns(2)
+        c1.metric("Mean Error (hours/week)", pct(num_err_gen["mean_rel_error"]))
+        c2.metric("Std Error (hours/week)", pct(num_err_gen["std_rel_error"]))
+
+    # ---------- 3) K-ANON + SUPPRESSION (FINAL) ----------
     df_k_sup = enforce_k_anonymity(df, qids=qids, k=k_value, suppress=True)
-    assessor_sup = RiskAssessor(df_k_sup, qids=qids)
+    assessor_sup = RiskAssessor(df_k_sup, qids)
     risk_sup = assessor_sup.risk_report()
-    console_print("--- AFTER K-ANONYMITY + SUPPRESSION (FINAL) ---", risk_sup)
-
-    st.markdown("#### 3. After K-anonymity + suppression (final dataset)")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Records", risk["records"])
-    c2.metric("Equiv. classes", risk["num_equivalence_classes"])
-    c3.metric("Uniqueness", pct(risk["uniqueness_ratio"]))
-
-    c4, c5, c6 = st.columns(3)
-    c4.metric("Avg class size", f"{risk['avg_equiv_class_size']:.2f}")
-    c5.metric("Min class size", risk["min_equiv_class_size"])
-    c6.metric("Max class size", risk["max_equiv_class_size"])
 
     suppr_final_raw = suppression_rate(df, df_k_sup)
     suppr_final_gen = suppression_rate(df_k_gen, df_k_sup)
 
-    st.markdown("Utility (final vs raw & generalised):")
-    c1, c2 = st.columns(2)
-    c1.metric("Suppression vs raw", pct(suppr_final_raw))
-    c2.metric("Suppression vs generalised", pct(suppr_final_gen))
-
-    with st.expander("Categorical TV distance (final vs raw)"):
-        tv_sup_rows = []
-        for col in ["education", "native-country", "income"]:
-            tv = categorical_tv_distance(df, df_k_sup, col)
-            tv_sup_rows.append({"column": col, "tv_distance (%)": tv * 100})
-        st.table(pd.DataFrame(tv_sup_rows))
+    tv_sup_rows = [
+        {
+            "column": col,
+            "tv_distance (%)": categorical_tv_distance(df, df_k_sup, col) * 100,
+        }
+        for col in ["education", "native-country", "income"]
+        if col in df.columns
+    ]
 
     num_err_sup = numeric_mean_std_error(df, df_k_sup, "hours-per-week")
 
-    c1, c2 = st.columns(2)
-    c1.metric("Mean error (hours)", pct(num_err_sup["mean_rel_error"]))
-    c2.metric("Std error (hours)", pct(num_err_sup["std_rel_error"]))
+    with st.container(border=True):
+        st.markdown(f"### K-Anonymity + Suppression (Final Released Dataset) — k = {k_value}")
 
-    st.markdown("Final anonymised dataset sample:")
-    st.dataframe(df_k_sup.head(50))
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Records", risk_sup["records"])
+        c2.metric("Equivalence Classes", risk_sup["num_equivalence_classes"])
+        c3.metric("Uniqueness", pct(risk_sup["uniqueness_ratio"]))
+
+        c4, c5, c6 = st.columns(3)
+        c4.metric("Avg Class Size", f"{risk_sup['avg_equiv_class_size']:.2f}")
+        c5.metric("Min Class Size", risk_sup["min_equiv_class_size"])
+        c6.metric("Max Class Size", risk_sup["max_equiv_class_size"])
+
+        st.markdown("**Suppression Impact**")
+        c1, c2 = st.columns(2)
+        c1.metric("Suppression vs Raw", pct(suppr_final_raw))
+        c2.metric("Suppression vs Generalised", pct(suppr_final_gen))
+
+        with st.expander("Categorical TV Distance (Final vs Raw)"):
+            st.table(pd.DataFrame(tv_sup_rows))
+
+        c1, c2 = st.columns(2)
+        c1.metric("Mean Error (hours/week)", pct(num_err_sup["mean_rel_error"]))
+        c2.metric("Std Error (hours/week)", pct(num_err_sup["std_rel_error"]))
+
+        st.markdown("Preview of Final Anonymised Data")
+        st.dataframe(df_k_sup.head(50))
+
+    # ---------- 4) OPTIONAL L-DIVERSITY ----------
+    if enable_ldiv:
+        st.markdown("----")
+
+        with st.container(border=True):
+            st.markdown("### L-Diversity (Distinct) — Sensitive Attribute = income")
+
+            df_ldiv, l_report = enforce_l_diversity(
+                df_k_sup,
+                qids=qids,
+                sensitive_attr="income",
+                L=2,
+                suppress=True,
+            )
+
+            st.json(l_report)
+
+            st.metric("Records After L-Diversity", len(df_ldiv))
+            st.metric("Suppression Rate", pct(l_report["suppression_rate"]))
+
+        return df_ldiv
 
     return df_k_sup
 
 
+# ------------------------------------------
+# STREAMLIT MAIN UI
+# ------------------------------------------
 def main():
-
     st.set_page_config(
-        page_title="SafeData — Risk & Utility Dashboard",
+        page_title="SafeData — Privacy Utility Dashboard",
         layout="wide",
     )
 
-    st.title("SafeData – Privacy–Utility Preserving Framework")
+    st.title("SafeData — Privacy & Utility Preserving Framework")
 
     df = load_data()
+    summary = show_profile(df)
 
-    # ========= PROFILE VIEW =========
-    tab1, tab2 = st.tabs(["Dataset & QID Candidates", "Risk — Utility Explorer"])
+    tab1, tab2 = st.tabs(["Dataset & QID Candidates", "Risk–Utility Explorer"])
 
     with tab1:
         show_qid_analysis(df, summary["suggested_qids"])
 
-        st.subheader("QID Candidate Analysis")
-        qid_analysis = analyse_qid_candidates(df, summary["suggested_qids"])
-
-        st.json(qid_analysis)
-
-    # ========= ANALYSIS VIEW =========
     with tab2:
-
-        st.sidebar.header("Configuration")
-
-        # Default policy QIDs
         default_policy_qids = [
             q for q in ["age", "sex", "education", "native-country"]
             if q in df.columns
         ]
 
+        st.sidebar.header("Configuration")
+
         mode = st.sidebar.radio(
             "QID Selection Mode",
-            ["Full Suggested", "Policy QIDs", "Custom"],
+            ["Full Suggested (Mode A)", "Policy QIDs (Mode B)", "Custom (Mode C)"],
             index=1,
         )
 
-        # --- K SLIDER RESTORED ---
-        k_value = st.sidebar.slider(
-            "Select k for K-Anonymity",
-            min_value=2,
-            max_value=50,
-            value=5,
-            step=1,
-        )
-        st.sidebar.success(f"k-anonymity: k = {k_value}")
+        k_value = st.sidebar.slider("k-Anonymity (k value)", 2, 20, 5, step=1)
 
-        if mode == "Full suggested (Mode A)":
+        enable_ldiv = st.sidebar.checkbox("Apply L-Diversity (Distinct)", value=False)
+
+        if mode == "Full Suggested (Mode A)":
             qids = summary["suggested_qids"]
-            st.info(
-                "Mode A: Using all suggested QIDs as a worst-case privacy stress test."
-            )
+
         elif mode == "Policy QIDs (Mode B)":
             qids = default_policy_qids
-            st.info(
-                f"Mode B: Using policy QIDs {default_policy_qids}. Balanced privacy & utility."
-            )
-        else:
-            st.sidebar.markdown("Strong QID candidates:")
-            st.sidebar.write(strong_names)
-            st.sidebar.markdown("Weak QID candidates:")
-            st.sidebar.write(weak_names)
 
+        else:
             qids = st.sidebar.multiselect(
-                "Select QIDs:",
+                "Select QIDs",
                 options=list(df.columns),
                 default=default_policy_qids,
             )
 
-            st.info(
-                "Mode C: Custom QIDs. Use candidate scores as guidance."
-            )
+        if st.sidebar.button("Run Analysis"):
+            df_final = run_pipeline(df, qids, k_value, enable_ldiv)
 
-        df_final = None
-        if st.sidebar.button("Run analysis"):
-            df_final = run_analysis(df, qids, k_value)
-
-        if df_final is not None:
-            st.markdown("### Download final anonymised dataset")
-            csv_bytes = df_final.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                label="Download anonymised CSV",
-                data=csv_bytes,
-                file_name=f"adult_anonymised_k{k_value}.csv",
-                mime="text/csv",
-            )
+            if df_final is not None:
+                st.markdown("### Download Final Anonymised Dataset")
+                st.download_button(
+                    "Download CSV",
+                    df_final.to_csv(index=False).encode("utf-8"),
+                    "anonymised_output.csv",
+                    "text/csv",
+                )
 
 
 if __name__ == "__main__":
